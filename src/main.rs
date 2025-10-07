@@ -19,6 +19,26 @@ fn main() {
 }
 
 fn reformat_url(raw: &str) -> String {
+    if raw.starts_with("mailto:") {
+        let email_reversed = &raw["mailto:".len()..];
+        let parts: Vec<&str> = email_reversed.split('@').collect();
+
+        if parts.len() == 2 {
+            let reversed_domain = parts[0]
+                .trim_end_matches('.')
+                .split('.')
+                .rev()
+                .collect::<Vec<_>>()
+                .join(".");
+
+            let username = parts[1]; // keep as-is
+
+            return format!("mailto:{}@{}", username, reversed_domain);
+        } else {
+            return raw.to_string(); // fallback if format is unexpected
+        }
+    }
+
     let parts: Vec<&str> = raw.split("://").collect();
     if parts.len() != 2 {
         return raw.to_string(); // fallback if no scheme
