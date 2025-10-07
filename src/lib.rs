@@ -21,18 +21,18 @@ use std::io::BufRead;
 use std::sync::mpsc::channel;
 
 struct TargetColumn<'a> {
-    name: &'a str,
+    names: [&'a str; 2],
     table: &'a str,
 }
 
 const TARGET_COLUMN: TargetColumn<'static> = TargetColumn {
-    name: "el_to",
+    names: ["el_to_domain_index", "el_to_path"],
     table: "externallinks",
 };
 
 enum ExtractedSql {
     InsertData(Vec<Vec<Literal>>),
-    CreateTableData(usize),
+    CreateTableData((usize, usize)),
     Error(String),
 }
 
@@ -54,8 +54,8 @@ fn extract_data(query: SqlQuery) -> ExtractedSql {
                         ..
                     }) => {
             if name == TARGET_COLUMN.table {
-                match find_target_field_index(fields) {
-                    Some(i) => ExtractedSql::CreateTableData(i),
+                match find_target_field_indices(fields) {
+                    Some(indices) => ExtractedSql::CreateTableData(indices),
                     None => ExtractedSql::Error(format!("Target field not found"))
                 }
             } else {
@@ -68,36 +68,43 @@ fn extract_data(query: SqlQuery) -> ExtractedSql {
     }
 }
 
-fn find_target_field_index(fields: Vec<ColumnSpecification>) -> Option<usize> {
-    fields.iter()
-        .position(|spec| {
-            let ColumnSpecification {
-                column: Column { name, .. },
-                ..
-            } = spec;
-            name == TARGET_COLUMN.name
-        })
-}
-
-fn extract_target_string(mut values: Vec<Literal>, target: usize) -> Result<String, String> {
-    if values.len() <= target {
-        Err(format!("Too few inserted values: {:?}", values))
-    } else {
-        match values.swap_remove(target) {
-            Literal::String(s) => Ok(s),
-            non_string_val => {
-                Err(format!("Invalid inserted value type: {:?} (at index {})", non_string_val, target))
+fn find_target_field_indices(fields: Vec<ColumnSpecification>) -> Option<(usize, usize)> {
+    let mut indices = [None, None];
+    for (i, spec) in fields.iter().enumerate(){
+        let ColumnSpecification { column: Column { name, .. }, .. } = spec;
+        for (j, target_name) in TARGET_COLUMN.names.iter().enumerate() {
+            if name == target_name {
+                indices[j] = Some(i);
             }
         }
+    }
+    match (indices[0], indices[1]) {
+        (Some(i1), Some(i2)) => Some((i1, i2)),
+        _ => None,
+    }
+}
+
+fn extract_target_strings(values: Vec<Literal>, targets: (usize, usize)) -> Result<(String, String), String> {
+    let (i1, i2) = targets;
+    if values.len() <= i1 || values.len() <= i2 {
+        return Err(format!("Too few inserted values: {:?}", values));
+    }
+
+    let v1 = values[i1].clone();
+    let v2 = values[i2].clone();
+
+    match (v1, v2) {
+        (Literal::String(s1), Literal::String(s2)) => Ok((s1, s2)),
+        _ => Err(format!("Invalid value types at indices {:?}: {:?}", targets, values)),
     }
 }
 
 pub fn extract_urls_from_insert_data(
     data: Vec<Vec<Literal>>,
-    target_index: usize,
-) -> impl ParallelIterator<Item=Result<String, String>> {
+    target_indices: (usize, usize),
+) -> impl ParallelIterator<Item=Result<(String, String), String>> {
     data.into_par_iter()
-        .map(move |v| extract_target_string(v, target_index))
+        .map(move |v| extract_target_strings(v, target_indices))
 }
 
 fn is_comment(line_bytes: &Vec<u8>) -> bool {
@@ -113,14 +120,14 @@ fn is_complete_statement(statement: &Vec<u8>) -> bool {
 #[derive(Debug)]
 struct ScanState {
     current_statement: Vec<u8>,
-    target_field: Option<usize>,
+    target_fields: Option<(usize, usize)>,
 }
 
 impl ScanState {
     fn new() -> ScanState {
         ScanState {
             current_statement: Vec::with_capacity(1_000_000),
-            target_field: None,
+            target_fields: None,
         }
     }
 
@@ -138,7 +145,7 @@ impl ScanState {
     }
 
     fn extract_scan_result(&mut self) -> ScanLineAction {
-        if let Some(target) = self.target_field {
+        if let Some(target) = self.target_fields {
             ScanLineAction::ExtractFrom(self.current_statement.clone(), target)
         } else {
             match parser::parse_query_bytes(&self.current_statement) {
@@ -147,7 +154,7 @@ impl ScanState {
                         ScanLineAction::ReportError("Insert statement before create table".into())
                     }
                     ExtractedSql::CreateTableData(index) => {
-                        self.target_field = Some(index);
+                        self.target_fields = Some(index);
                         ScanLineAction::Pass
                     }
                     ExtractedSql::Error(err) => ScanLineAction::ReportError(err),
@@ -170,17 +177,17 @@ impl ScanState {
 enum ScanLineAction {
     Pass,
     ReportError(String),
-    ExtractFrom(Vec<u8>, usize),
+    ExtractFrom(Vec<u8>, (usize, usize)),
 }
 
 impl ScanLineAction {
-    fn into_par_iter(self) -> impl ParallelIterator<Item=Result<String, String>> {
+    fn into_par_iter(self) -> impl ParallelIterator<Item=Result<(String, String), String>> {
         let mut res = None;
         let mut err = None;
         match self {
-            ScanLineAction::ExtractFrom(bytes, target) => {
+            ScanLineAction::ExtractFrom(bytes, targets) => {
                 match parse_insert(&bytes) {
-                    Ok(data) => { res = Some(extract_urls_from_insert_data(data, target)) }
+                    Ok(data) => { res = Some(extract_urls_from_insert_data(data, targets)) }
                     Err(s) => { err = Some(s) }
                 }
             }
@@ -218,7 +225,7 @@ fn scan_binary_lines(
 }
 
 pub fn iter_string_urls<T: BufRead>(input: T)
-                                    -> impl ParallelIterator<Item=Result<String, String>> {
+                                    -> impl ParallelIterator<Item=Result<(String, String), String>> {
     let rx = {
         let (tx, rx) = channel();
 
