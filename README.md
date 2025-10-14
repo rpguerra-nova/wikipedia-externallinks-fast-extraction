@@ -21,10 +21,9 @@ outputs an exhaustive list of all outlinks from wikipedia to other sites.
 
 ### On linux
 
-#### Download
+#### Download and extract source code, then compile
 ```sh
-wget 'https://github.com/lovasoa/wikipedia-externallinks-fast-extraction/releases/download/0.1.5/wikipedia-externallinks-fast-extraction'
-chmod +x wikipedia-externallinks-fast-extraction
+cargo build
 ```
 
 #### Extract links
@@ -33,7 +32,7 @@ chmod +x wikipedia-externallinks-fast-extraction
 LANG=en
 curl 'https://dumps.wikimedia.org/'$LANG'wiki/latest/'$LANG'wiki-latest-externallinks.sql.gz' |
 	gunzip |
-	./wikipedia-externallinks-fast-extraction > urls.txt
+	</path/to/executable>/wikipedia-externallinks-fast-extraction > urls.txt
 ```
 
 The urls will be streamed into urls.txt as they are downloaded.
