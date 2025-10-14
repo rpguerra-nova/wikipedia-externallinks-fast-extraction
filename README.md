@@ -21,8 +21,10 @@ outputs an exhaustive list of all outlinks from wikipedia to other sites.
 
 ### On linux
 
-#### Download and extract source code, then compile
+#### Download and extract source code, then install rust and compile in extracted folder
 ```sh
+sudo apt install rustup
+rustup default stable
 cargo build
 ```
 
